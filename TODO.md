@@ -9,5 +9,5 @@
 - [x] Corregir y completar requirements.txt
 - [x] Instalar dependencias
 - [x] Ejecutar la aplicación
-- [ ] Actualizar a google.genai (deprecated google.generativeai)
+- [x] Actualizar a google.genai (deprecated google.generativeai)
 

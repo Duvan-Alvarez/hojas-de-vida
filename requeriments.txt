@@ -1,5 +1,0 @@
-streamlit
-spacy
-python-docx
-pdfplumber
-scikit-learn
