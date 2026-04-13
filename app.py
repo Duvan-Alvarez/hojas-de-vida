@@ -54,7 +54,10 @@ with tab1:
                                 matches.append({
                                     'job': job,
                                     'score': match_result.get('score', 0),
-                                    'reasoning': match_result.get('reasoning', '')
+                                    'reasoning': match_result.get('reasoning', ''),
+                                    'matched_terms': match_result.get('matched_terms', []),
+                                    'strengths': match_result.get('strengths', []),
+                                    'gaps': match_result.get('gaps', [])
                                 })
 
                     processed.append({
@@ -119,6 +122,11 @@ with tab1:
                                     st.markdown(f"**Área:** {match['job']['area']}")
                                     st.markdown(f"**Descripción:** {match['job']['description']}")
                                     st.markdown(f"**Análisis de compatibilidad:** {match['reasoning']}")
+
+                                    matched_terms = match.get('matched_terms', [])
+                                    if matched_terms:
+                                        st.markdown("**Términos coincidentes:**")
+                                        st.write(', '.join(matched_terms))
                                     
                                     if match.get('strengths'):
                                         st.markdown("**Fortalezas:**")

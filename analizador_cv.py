@@ -10,7 +10,7 @@ import requests
 from bs4 import BeautifulSoup
 
 # Configura tu API Key
-GEMINI_API_KEY = "AIzaSyBh8Jg8z5p5R7Zgk3sp1AX4bgL_6o_beKQ"
+GEMINI_API_KEY = "AIzaSyDSLEC06cIuX_bPuErW42XtngI_a55RMno"
 client = genai.Client(api_key=GEMINI_API_KEY)
 from pypdf import PdfReader
 import docx
@@ -125,8 +125,13 @@ class ResumeAnalyzer:
             # Intentar extraer JSON de la respuesta
             json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
             if json_match:
-                json_str = json_match.group(0)
-                info = json.loads(json_str)
+                info = json.loads(json_match.group(0))
+                info.setdefault("name", "")
+                info.setdefault("contact", "")
+                info.setdefault("education", "")
+                info.setdefault("experience", "")
+                info.setdefault("skills", "")
+                info["raw_text"] = text
                 logger.info("JSON extraído exitosamente de Gemini")
                 return info
             else:
@@ -134,61 +139,111 @@ class ResumeAnalyzer:
 
         except Exception as e:
             logger.error(f"Error en extracción con Gemini: {e}")
-            # Fallback a extracción básica con regex
             logger.info("Usando extracción básica con regex")
-            return self._extract_with_regex(text)
+            info = self._extract_with_regex(text)
+            info["raw_text"] = text
+            return info
+
+    def _extract_section(self, text: str, headings: list[str]) -> str:
+        """Extrae el contenido de una sección basada en encabezados comunes."""
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        section_lines = []
+        capture = False
+        stop_headings = ['experiencia', 'habilidades', 'educación', 'estudios', 'formación', 'contacto', 'idiomas', 'certificaciones', 'referencias', 'proyectos', 'perfil']
+
+        for line in lines:
+            lower_line = line.lower()
+            if any(heading in lower_line for heading in headings):
+                capture = True
+                continue
+            if capture and any(stop_heading in lower_line for stop_heading in stop_headings):
+                break
+            if capture:
+                section_lines.append(line)
+
+        return ' '.join(section_lines).strip()
 
     def _extract_with_regex(self, text: str) -> Dict[str, str]:
         """Extracción básica usando expresiones regulares."""
+        cleaned_text = re.sub(r'\r\n?', '\n', text).strip()
+        lines = [line.strip() for line in cleaned_text.split('\n') if line.strip()]
+
         info = {
             "name": "",
             "contact": "",
             "education": "",
             "experience": "",
-            "skills": ""
+            "skills": "",
+            "raw_text": cleaned_text
         }
 
-        # Extraer nombre (asumiendo que está al inicio, en mayúsculas o con título)
-        name_match = re.search(r'^([A-ZÁÉÍÓÚÑ\s]{2,50})', text.strip(), re.MULTILINE)
-        if name_match:
-            info["name"] = name_match.group(1).strip()
+        # Extraer nombre a partir de encabezados comunes o de las primeras líneas
+        for line in lines[:8]:
+            if re.search(r'\b(?:nombre completo|nombre)\b', line, re.I):
+                candidate = re.sub(r'(?i)nombre completo?:\s*', '', line).strip()
+                if candidate:
+                    info["name"] = candidate
+                    break
 
-        # Extraer email
-        email_match = re.search(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b', text)
-        if email_match:
-            info["contact"] = email_match.group(0)
+        if not info["name"]:
+            for line in lines[:8]:
+                if re.search(r'\bhoja de vida\b|\bcurr[ií]culum\b|\bcv\b', line, re.I):
+                    continue
+                if 1 < len(line.split()) <= 6 and re.match(r'^[A-ZÁÉÍÓÚÑ][A-Za-zÁÉÍÓÚÑáéíóúñü\s]+$', line):
+                    info["name"] = line
+                    break
 
-        # Extraer teléfono (patrones comunes)
-        phone_match = re.search(r'\b(\+?\d{1,3}[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b', text)
-        if phone_match:
-            if info["contact"]:
-                info["contact"] += f", {phone_match.group(0)}"
-            else:
-                info["contact"] = phone_match.group(0)
+        # Extraer datos de contacto
+        contacts = []
+        emails = re.findall(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b', cleaned_text)
+        phones = re.findall(r'\b(?:\+?\d{1,3}[-.\s]?)?(?:\d{3}[-.\s]?\d{3}[-.\s]?\d{4}|\d{4}[-.\s]?\d{4})\b', cleaned_text)
+        linkedin = re.findall(r'https?://(?:www\.)?linkedin\.com/[A-Za-z0-9_/\-]+', cleaned_text, re.I)
 
-        # Extraer educación (palabras clave)
-        education_keywords = ['educación', 'estudios', 'universidad', 'colegio', 'bachiller', 'licenciatura', 'ingeniería', 'maestría', 'doctorado']
-        education_lines = []
-        for line in text.split('\n'):
-            if any(keyword.lower() in line.lower() for keyword in education_keywords):
-                education_lines.append(line.strip())
-        info["education"] = ' '.join(education_lines[:3])  # Limitar a 3 líneas
+        contacts.extend(emails)
+        contacts.extend(phones)
+        contacts.extend(linkedin)
+        contacts = list(dict.fromkeys([contact.strip() for contact in contacts if contact.strip()]))
+        info["contact"] = ', '.join(contacts)
 
-        # Extraer experiencia (palabras clave)
-        experience_keywords = ['experiencia', 'trabajo', 'empleo', 'puesto', 'cargo', 'empresa', 'años', 'desarrollador', 'ingeniero']
-        experience_lines = []
-        for line in text.split('\n'):
-            if any(keyword.lower() in line.lower() for keyword in experience_keywords):
-                experience_lines.append(line.strip())
-        info["experience"] = ' '.join(experience_lines[:5])  # Limitar a 5 líneas
+        # Extraer secciones completas usando encabezados comunes
+        education_section = self._extract_section(cleaned_text, ['educación', 'formación académica', 'estudios', 'colegio', 'universidad', 'bachiller'])
+        experience_section = self._extract_section(cleaned_text, ['experiencia', 'historial laboral', 'antecedentes', 'experiencia profesional', 'trayectoria'])
+        skills_section = self._extract_section(cleaned_text, ['habilidades', 'competencias', 'conocimientos', 'destrezas', 'técnicas', 'soft skills'])
 
-        # Extraer habilidades (palabras clave técnicas comunes)
-        skills_keywords = ['python', 'java', 'javascript', 'sql', 'html', 'css', 'react', 'node', 'git', 'linux', 'windows', 'ingles', 'español']
+        if education_section:
+            info["education"] = education_section
+        else:
+            education_keywords = ['educación', 'estudios', 'universidad', 'colegio', 'bachiller', 'licenciatura', 'ingeniería', 'técnico', 'maestría', 'doctorado']
+            education_lines = [line for line in lines if any(keyword in line.lower() for keyword in education_keywords)]
+            info["education"] = ' '.join(education_lines[:5])
+
+        if experience_section:
+            info["experience"] = experience_section
+        else:
+            experience_keywords = ['experiencia', 'trabajo', 'empleo', 'puesto', 'cargo', 'empresa', 'años', 'auxiliar', 'logística', 'almacén', 'producción', 'operario', 'recepción', 'despacho', 'inventarios', 'envasado']
+            experience_lines = [line for line in lines if any(keyword in line.lower() for keyword in experience_keywords)]
+            info["experience"] = ' '.join(experience_lines[:10])
+
+        skills_keywords = [
+            'python', 'java', 'javascript', 'sql', 'html', 'css', 'react', 'node', 'git', 'linux', 'windows',
+            'excel', 'office', 'word', 'powerpoint', 'microsoft office', 'sap', 'logística', 'almacén', 'inventarios',
+            'recepción', 'despacho', 'empaquetado', 'montacargas', 'producción', 'control de calidad', 'seguridad industrial',
+            'trabajo en equipo', 'comunicación', 'atención al cliente', 'gestión del tiempo', 'planificación', 'organización',
+            'ingles', 'español'
+        ]
         found_skills = []
+        lower_text = cleaned_text.lower()
         for skill in skills_keywords:
-            if skill.lower() in text.lower():
+            if re.search(rf'\b{re.escape(skill)}\b', lower_text, re.I):
                 found_skills.append(skill.title())
-        info["skills"] = ', '.join(found_skills)
+
+        if skills_section:
+            info["skills"] = skills_section
+        elif found_skills:
+            info["skills"] = ', '.join(dict.fromkeys(found_skills))
+        else:
+            skills_lines = [line for line in lines if any(keyword in line.lower() for keyword in skills_keywords)]
+            info["skills"] = ' '.join(dict.fromkeys(skills_lines[:8]))
 
         logger.info(f"Extracción con regex completada: {info}")
         return info
@@ -203,6 +258,32 @@ class ResumeAnalyzer:
             return 0.0
         common = req_tokens.intersection(cand_tokens)
         return len(common) / len(req_tokens)
+
+    def _extract_matching_terms(self, requirements: str, candidate_text: str) -> list[str]:
+        stopwords = {'de', 'y', 'en', 'el', 'la', 'los', 'las', 'para', 'con', 'por', 'del', 'al', 'un', 'una', 'su', 'sus'}
+        req_tokens = self._normalize_text(requirements)
+        cand_tokens = set(self._normalize_text(candidate_text))
+        matched = []
+        seen = set()
+        for token in req_tokens:
+            if token in stopwords:
+                continue
+            if token in cand_tokens and token not in seen:
+                seen.add(token)
+                matched.append(token)
+                if len(matched) >= 12:
+                    break
+        return matched
+
+    def _safe_int_score(self, value: any) -> int:
+        try:
+            return int(float(value))
+        except Exception:
+            return 0
+
+    def _build_local_candidate_profile(self, cv_data: Dict[str, str]) -> str:
+        parts = [cv_data.get('name', ''), cv_data.get('education', ''), cv_data.get('experience', ''), cv_data.get('skills', ''), cv_data.get('raw_text', '')]
+        return ' '.join([part for part in parts if part])
 
     def extract_job_requirements_from_url(self, url: str) -> str:
         """Extrae el texto de requisitos desde una página web pública."""
@@ -243,37 +324,34 @@ class ResumeAnalyzer:
         - Nombre: {cv_data.get('name', 'No especificado')}
         - Educación: {cv_data.get('education', 'No especificada')}
         - Experiencia laboral: {cv_data.get('experience', 'No especificada')}
-        - Habilidades técnicas: {cv_data.get('skills', 'No especificadas')}
+        - Habilidades técnicas y blandas: {cv_data.get('skills', 'No especificadas')}
         - Información de contacto: {cv_data.get('contact', 'No especificada')}
 
         INSTRUCCIONES DE ANÁLISIS:
         1. Evalúa la experiencia relevante: ¿Cuántos años de experiencia tiene en áreas relacionadas?
         2. Revisa la formación académica: ¿Cumple con los requisitos educativos?
-        3. Analiza las habilidades: ¿Posee las competencias técnicas necesarias?
-        4. Considera el ajuste general: ¿El perfil general del candidato encaja con el puesto?
+        3. Analiza las habilidades: ¿Posee las competencias necesarias para el puesto?
+        4. Considera el ajuste general: ¿El perfil encaja con el puesto en logística o producción?
 
         CRITERIOS DE EVALUACIÓN:
         - Excelente ajuste: 90-100% (cumple todos los requisitos principales)
-        - Bueno ajuste: 70-89% (cumple la mayoría, con algunas brechas menores)
-        - Regular ajuste: 50-69% (cumple algunos requisitos, pero tiene brechas importantes)
+        - Buen ajuste: 70-89% (cumple la mayoría, con algunas brechas menores)
+        - Ajuste regular: 50-69% (cumple algunos requisitos, pero tiene brechas importantes)
         - Bajo ajuste: 0-49% (no cumple los requisitos principales)
 
-        Responde ÚNICAMENTE con un objeto JSON válido con los siguientes campos:
-        - match: true/false (recomienda contratar si score >= 70)
-        - score: número entero del 0 al 100
-        - reasoning: explicación detallada (máximo 200 palabras) de por qué el candidato es o no adecuado
-        - strengths: lista de fortalezas del candidato para este puesto
-        - gaps: lista de brechas o áreas de mejora identificadas
-
-        Formato JSON exacto:
+        Responde ÚNICAMENTE con un objeto JSON válido:
         {{
             "match": true,
             "score": 85,
-            "reasoning": "El candidato tiene 3 años de experiencia en ventas y formación en administración de empresas...",
-            "strengths": ["Experiencia en ventas", "Habilidades de negociación"],
-            "gaps": ["Falta experiencia específica en el sector alimenticio"]
+            "reasoning": "...",
+            "strengths": ["..."],
+            "gaps": ["..."]
         }}
         """
+
+        local_profile = self._build_local_candidate_profile(cv_data)
+        local_score = self._safe_int_score(self._score_candidate_against_requirements(f"{job_title} {job_description}", local_profile) * 100)
+        matched_terms = self._extract_matching_terms(f"{job_title} {job_description}", local_profile)
 
         try:
             response = client.models.generate_content(
@@ -281,34 +359,47 @@ class ResumeAnalyzer:
                 contents=prompt
             )
             response_text = response.text.strip()
-            
             json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
             if json_match:
                 result = json.loads(json_match.group(0))
-                # Ensure required fields
                 result.setdefault('match', False)
                 result.setdefault('score', 0)
                 result.setdefault('reasoning', 'Análisis no disponible')
                 result.setdefault('strengths', [])
                 result.setdefault('gaps', [])
-                return result
+                result.setdefault('matched_terms', matched_terms)
             else:
-                return {
-                    "match": False, 
-                    "score": 0, 
-                    "reasoning": "No se pudo analizar la compatibilidad", 
-                    "strengths": [], 
-                    "gaps": []
-                }
+                raise ValueError('No se encontró JSON en la respuesta')
         except Exception as e:
             logger.error(f"Error en matching: {e}")
-            return {
-                "match": False, 
-                "score": 0, 
-                "reasoning": f"Error en análisis: {str(e)}", 
-                "strengths": [], 
-                "gaps": []
+            result = {
+                'match': False,
+                'score': 0,
+                'reasoning': f'No se pudo obtener análisis de Gemini: {str(e)}',
+                'strengths': [],
+                'gaps': [],
+                'matched_terms': matched_terms
             }
+
+        ai_score = self._safe_int_score(result.get('score', 0))
+        final_score = max(ai_score, local_score)
+        result['score'] = final_score
+        result['match'] = result.get('match', False) or final_score >= 70
+        result['matched_terms'] = result.get('matched_terms', matched_terms)
+
+        if final_score >= 70 and not result.get('reasoning'):
+            result['reasoning'] = 'El perfil tiene coincidencias claras con los términos de la vacante y cumple con los requisitos principales.'
+
+        if local_score > ai_score and not result.get('strengths'):
+            result['strengths'] = [
+                'Coincidencia de términos clave entre el CV y la vacante',
+                'Experiencia o habilidades relevantes detectadas en el texto completo'
+            ]
+
+        if final_score < 70 and not result.get('gaps'):
+            result['gaps'] = ['El perfil necesita más experiencia específica o habilidades clave para este puesto.']
+
+        return result
 
     def store_information(self, info: Dict[str, str]):
         """Almacena la información extraída en la base de datos."""
