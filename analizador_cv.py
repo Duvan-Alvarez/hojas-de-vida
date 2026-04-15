@@ -8,11 +8,15 @@ import os
 import logging
 import requests
 from bs4 import BeautifulSoup
+from transformers import pipeline
+ner_pipeline = pipeline("ner", model="dbmdz/bert-large-cased-finetuned-conll03-english")  # O un modelo en español si encuentras uno
 
-# Configura tu API Key
-GEMINI_API_KEY = "AIzaSyDSLEC06cIuX_bPuErW42XtngI_a55RMno"
-client = genai.Client(api_key=GEMINI_API_KEY)
+# Configura tu API Key (actualmente suspendida - usando análisis local)
+GEMINI_API_KEY = "AIzaSyDOlkWzG39vasRtW8zdeddY6Gg9zcHQLD4"  # Reemplaza con tu clave válida de Google Gemini
+client = None if GEMINI_API_KEY is None else genai.Client(api_key=GEMINI_API_KEY)
 from pypdf import PdfReader
+import plotly.express as px
+# En la pestaña de candidatos, muestra un gráfico de skills
 import docx
 # import spacy  # Removido por incompatibilidad con Python 3.14
 import re
@@ -95,11 +99,14 @@ class ResumeAnalyzer:
         - Para habilidades, lista las técnicas y blandas mencionadas.
 
         Campos a extraer:
-        - name: Nombre completo de la persona (incluyendo apellidos si están disponibles)
-        - contact: Toda la información de contacto disponible (email, teléfono, dirección, LinkedIn, etc.)
-        - education: Detalles completos de formación académica (títulos, instituciones, años, especializaciones)
-        - experience: Historial laboral detallado (puestos, empresas, períodos, responsabilidades clave)
-        - skills: Lista de habilidades técnicas y blandas identificadas en el CV
+        - name: Nombre completo
+        - contact: Información de contacto
+        - education: Educación (grados, instituciones, fechas)
+        - experience: Experiencia laboral (puestos, empresas, años, logros clave)
+        - skills: Habilidades técnicas y blandas (lista detallada)
+        - languages: Idiomas y niveles
+        - certifications: Certificaciones relevantes
+        - summary: Resumen ejecutivo del perfil 
 
         Ejemplo de respuesta esperada:
         {{
@@ -115,6 +122,12 @@ class ResumeAnalyzer:
         """
 
         try:
+            if client is None:
+                logger.info("API de Gemini no disponible, usando extracción local")
+                info = self._extract_with_regex(text)
+                info["raw_text"] = text
+                return info
+
             response = client.models.generate_content(
                 model='gemini-1.5-pro',
                 contents=prompt
@@ -353,6 +366,18 @@ class ResumeAnalyzer:
         local_score = self._safe_int_score(self._score_candidate_against_requirements(f"{job_title} {job_description}", local_profile) * 100)
         matched_terms = self._extract_matching_terms(f"{job_title} {job_description}", local_profile)
 
+        if client is None:
+            logger.info("API de Gemini no disponible, usando solo análisis local")
+            result = {
+                'match': local_score >= 70,
+                'score': local_score,
+                'reasoning': f'Análisis local: {local_score}% de coincidencia basada en términos clave.',
+                'strengths': ['Coincidencia de términos clave entre el CV y la vacante'],
+                'gaps': ['Análisis limitado sin IA - se recomienda experiencia específica'],
+                'matched_terms': matched_terms
+            }
+            return result
+
         try:
             response = client.models.generate_content(
                 model='gemini-1.5-pro',
@@ -450,14 +475,7 @@ class ResumeAnalyzer:
             return cursor.fetchall()
         return []
 
-# Ejemplo de uso
-if __name__ == "__main__":
-    analyzer = ResumeAnalyzer()
-    
-    # Procesar un CV
-    # analyzer.process_resume("path/to/resume.pdf")
-    
-    # Buscar candidatos
-    results = analyzer.search_candidates(skill="Python", experience_keywords="desarrollador")
-    for row in results:
-        print(row)
+    def score_resume(self, resume_data: dict, job_description: str) -> float:
+        prompt = f"Evalúa la coincidencia del CV con la vacante (0-100): {job_description}. Datos CV: {json.dumps(resume_data)}"
+        response = client.models.generate_content(model="gemini-1.5-pro", contents=prompt)
+        # Parsear y retornar score

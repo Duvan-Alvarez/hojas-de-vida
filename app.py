@@ -3,6 +3,7 @@ import os
 import requests
 from bs4 import BeautifulSoup
 from analizador_cv import ResumeAnalyzer
+import plotly.express as px
 
 # Inicializar analizador
 analyzer = ResumeAnalyzer()
@@ -172,6 +173,20 @@ with tab2:
                     st.write(skills)
                 else:
                     st.write("No se detectaron habilidades")
+
+    # En la pestaña de candidatos, muestra un gráfico de skills
+    st.subheader("Gráfico de habilidades de los candidatos")
+    if candidates:
+        skill_counts = {}
+        for cand in candidates:
+            for skill in cand.get("skills", []):
+                skill_counts[skill] = skill_counts.get(skill, 0) + 1
+        skill_names = list(skill_counts.keys())
+        skill_values = list(skill_counts.values())
+        fig = px.bar(skill_names, skill_values, labels={'x': 'Habilidades', 'y': 'Cantidad de candidatos'}, title='Habilidades de los candidatos')
+        st.plotly_chart(fig)
+    else:
+        st.info("No hay candidatos para mostrar.")
 
 with tab3:
     st.subheader("Vacantes publicadas en SalsasAderezos")
