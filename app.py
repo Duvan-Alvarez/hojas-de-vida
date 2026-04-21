@@ -114,6 +114,27 @@ with tab1:
                         else:
                             st.write("No se detectaron habilidades")
 
+                        st.markdown("**Idiomas**")
+                        languages = data.get("languages", "")
+                        if languages:
+                            st.write(languages)
+                        else:
+                            st.write("No se detectaron idiomas")
+
+                        st.markdown("**Certificaciones**")
+                        certifications = data.get("certifications", "")
+                        if certifications:
+                            st.write(certifications)
+                        else:
+                            st.write("No se detectaron certificaciones")
+
+                        st.markdown("**Resumen del perfil**")
+                        summary = data.get("summary", "")
+                        if summary:
+                            st.write(summary)
+                        else:
+                            st.write("No se detectó resumen")
+
                         # Show job matches
                         matches = item.get("matches", [])
                         if matches:
@@ -173,6 +194,48 @@ with tab2:
                     st.write(skills)
                 else:
                     st.write("No se detectaron habilidades")
+
+                # Encontrar la vacante más compatible para este candidato
+                best_match_for_candidate = None
+                highest_score_for_candidate = -1
+
+                vacancies = st.session_state.get('vacancies', [])
+                if vacancies:
+                    for job in vacancies:
+                        match_result = analyzer.match_cv_to_job(cand, job['title'], job['description'])
+                        current_score = match_result.get('score', 0)
+
+                        if current_score > highest_score_for_candidate:
+                            highest_score_for_candidate = current_score
+                            best_match_for_candidate = {
+                                'job': job,
+                                'score': current_score,
+                                'reasoning': match_result.get('reasoning', ''),
+                                'strengths': match_result.get('strengths', []),
+                                'gaps': match_result.get('gaps', []),
+                                'matched_terms': match_result.get('matched_terms', [])
+                            }
+                
+                if best_match_for_candidate:
+                    st.markdown("---")
+                    st.markdown(f"**🎯 Vacante más compatible:**")
+                    with st.expander(f"💼 {best_match_for_candidate['job']['title']} - Score: {best_match_for_candidate['score']}%"):
+                        st.markdown(f"**Área:** {best_match_for_candidate['job']['area']}")
+                        st.markdown(f"**Descripción:** {best_match_for_candidate['job']['description']}")
+                        st.markdown(f"**Análisis de compatibilidad:** {best_match_for_candidate['reasoning']}")
+                        if best_match_for_candidate.get('strengths'):
+                            st.markdown("**Fortalezas:**")
+                            for strength in best_match_for_candidate['strengths']:
+                                st.markdown(f"- ✅ {strength}")
+                        if best_match_for_candidate.get('gaps'):
+                            st.markdown("**Áreas de mejora:**")
+                            for gap in best_match_for_candidate['gaps']:
+                                st.markdown(f"- ⚠️ {gap}")
+                        if best_match_for_candidate.get('matched_terms'):
+                            st.markdown("**Términos coincidentes:**")
+                            st.write(', '.join(best_match_for_candidate['matched_terms']))
+                else:
+                    st.info("No hay vacantes cargadas o no se encontró una vacante compatible para este candidato.")
 
     # En la pestaña de candidatos, muestra un gráfico de skills
     st.subheader("Gráfico de habilidades de los candidatos")
@@ -248,6 +311,63 @@ with tab3:
             with st.expander(f"💼 {job['title']}"):
                 st.markdown(f"**Área:** {job['area']}")
                 st.markdown(f"**Descripción:** {job['description']}")
+
+        candidates = analyzer.get_all_candidates()
+        if candidates:
+            st.markdown("### 🏆 Ranking de Candidatos por Compatibilidad")
+            st.caption("Análisis de cada candidato contra todas las vacantes para encontrar su mejor opción y puntaje.")
+
+            candidate_matches = []
+
+            for cand in candidates:
+                best_match_for_candidate = None
+                highest_score = -1
+
+                for job in st.session_state['vacancies']:
+                    match = analyzer.match_cv_to_job(cand, job['title'], job['description'])
+                    current_score = match.get('score', 0)
+
+                    if current_score > highest_score:
+                        highest_score = current_score
+                        best_match_for_candidate = {
+                            'candidate': cand,
+                            'job': job,
+                            'score': current_score,
+                            'details': match
+                        }
+                
+                if best_match_for_candidate:
+                    candidate_matches.append(best_match_for_candidate)
+
+            if candidate_matches:
+                # Ordenar candidatos por puntaje descendente
+                candidate_matches.sort(key=lambda x: x['score'], reverse=True)
+
+                for i, result in enumerate(candidate_matches):
+                    candidate_name = result['candidate'].get('name', 'Nombre no disponible')
+                    job_title = result['job']['title']
+                    score = result['score']
+                    
+                    # Usar st.success para el primer lugar, st.info para los demás
+                    if i == 0:
+                        st.success(f"**1. {candidate_name} → {job_title} ({score}%)**")
+                    else:
+                        st.info(f"**{i + 1}. {candidate_name} → {job_title} ({score}%)**")
+
+                    with st.expander("Ver detalles del análisis"):
+                        st.markdown(f"**Análisis:** {result['details'].get('reasoning', 'No disponible.')}")
+                        if result['details'].get('strengths'):
+                            st.markdown("**Fortalezas:**")
+                            for strength in result['details']['strengths']:
+                                st.markdown(f"- ✅ {strength}")
+                        if result['details'].get('gaps'):
+                            st.markdown("**Áreas de mejora:**")
+                            for gap in result['details']['gaps']:
+                                st.markdown(f"- ⚠️ {gap}")
+            else:
+                st.warning("No se pudo determinar una mejor coincidencia. Asegúrate de tener candidatos y vacantes cargados.")
+        else:
+            st.info("No hay candidatos procesados en la base de datos para analizar compatibilidad.")
     else:
         st.info("No hay vacantes cargadas. Haz clic en 'Actualizar vacantes'.")
 

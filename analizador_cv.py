@@ -6,28 +6,29 @@ import google.genai as genai
 import json
 import os
 import logging
-import requests
-from bs4 import BeautifulSoup
-from transformers import pipeline
-ner_pipeline = pipeline("ner", model="dbmdz/bert-large-cased-finetuned-conll03-english")  # O un modelo en español si encuentras uno
-
-# Configura tu API Key (actualmente suspendida - usando análisis local)
-GEMINI_API_KEY = "AIzaSyDOlkWzG39vasRtW8zdeddY6Gg9zcHQLD4"  # Reemplaza con tu clave válida de Google Gemini
-client = None if GEMINI_API_KEY is None else genai.Client(api_key=GEMINI_API_KEY)
+import requests # Used in extract_job_requirements_from_url
+from bs4 import BeautifulSoup # Used in extract_job_requirements_from_url
 from pypdf import PdfReader
-import plotly.express as px
-# En la pestaña de candidatos, muestra un gráfico de skills
 import docx
-# import spacy  # Removido por incompatibilidad con Python 3.14
 import re
 import sqlite3
 from sqlite3 import Error
-from typing import Dict, Optional
+from typing import Dict, Optional # type: ignore
 
 # Configurar logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Configura tu API Key. Es recomendable cargarla desde variables de entorno por seguridad.
+# Por ejemplo: os.getenv("GEMINI_API_KEY")
+GEMINI_API_KEY = os.getenv("AIzaSyA9t5rCFnfnun3Ygf8EmM-K1L89oJalT-o")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+model = None
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
+    model = genai.GenerativeModel('gemini-pro')
+else:
+    logger.warning("La variable de entorno GEMINI_API_KEY no está configurada. Las funciones de IA no estarán disponibles.")
 # Cargar modelo de SpaCy para español (removido por incompatibilidad)
 # nlp = spacy.load("es_core_news_sm")
 
@@ -89,32 +90,38 @@ class ResumeAnalyzer:
     def extract_information(self, text: str) -> Dict[str, str]:
         """Extrae información relevante usando Gemini AI con instrucciones mejoradas."""
         prompt = f"""
-        Analiza el siguiente texto de un currículum vitae y extrae la información relevante de manera precisa y detallada.
+        Eres un asistente experto en análisis de currículums.
+        Analiza el siguiente texto en español y extrae la información en un único objeto JSON válido.
 
-        IMPORTANTE: 
-        - Responde ÚNICAMENTE con un objeto JSON válido, sin texto adicional.
-        - Si no encuentras información específica, usa cadena vacía "".
-        - Sé específico y preciso en la extracción.
-        - Para experiencia, incluye años, puestos y empresas si están disponibles.
-        - Para habilidades, lista las técnicas y blandas mencionadas.
+        IMPORTANTE:
+        - Responde ÚNICAMENTE con un objeto JSON válido, sin ningún texto adicional.
+        - Si no encuentras información, usa cadena vacía "".
+        - Para experiencia, incluye años, puestos, empresas y logros clave si están presentes.
+        - Para habilidades, lista técnicas y blandas.
+        - Para idiomas, indica idioma y nivel si aparece.
+        - Para certificaciones, lista el nombre de la certificación.
+        - Para el resumen, extrae el perfil ejecutivo o el objetivo profesional.
 
         Campos a extraer:
-        - name: Nombre completo
-        - contact: Información de contacto
-        - education: Educación (grados, instituciones, fechas)
-        - experience: Experiencia laboral (puestos, empresas, años, logros clave)
-        - skills: Habilidades técnicas y blandas (lista detallada)
-        - languages: Idiomas y niveles
-        - certifications: Certificaciones relevantes
-        - summary: Resumen ejecutivo del perfil 
+        - name
+        - contact
+        - education
+        - experience
+        - skills
+        - languages
+        - certifications
+        - summary
 
-        Ejemplo de respuesta esperada:
+        Ejemplo de salida esperada:
         {{
             "name": "María González Rodríguez",
             "contact": "maria.gonzalez@email.com, +57 300 123 4567, Bogotá, Colombia",
-            "education": "Ingeniería Industrial, Universidad Nacional, 2015-2020. Especialización en Gestión de Calidad",
-            "experience": "Gerente de Producción en Empresa XYZ (2020-2023): Lideré equipo de 15 personas, implementé sistema de calidad ISO 9001. Analista de Procesos en ABC Corp (2018-2020): Optimizé procesos reduciendo costos en 20%",
-            "skills": "Python, SQL, Gestión de Proyectos, Liderazgo de Equipos, ISO 9001, Lean Manufacturing"
+            "education": "Ingeniería Industrial, 2015-2020. Especialización en Gestión de Calidad",
+            "experience": "Gerente de Producción: Lideré equipo de 15 personas. Analista de Procesos: Optimizé procesos reduciendo costos en 20%",
+            "skills": "Python, SQL, Gestión de Proyectos, Liderazgo de Equipos, ISO 9001, Lean Manufacturing",
+            "languages": "Español nativo, Inglés intermedio",
+            "certifications": "ISO 9001 Internal Auditor, Scrum Master",
+            "summary": "Profesional en ingeniería con experiencia en gestión de operaciones y mejora continua."
         }}
 
         Texto del CV a analizar:
@@ -122,33 +129,30 @@ class ResumeAnalyzer:
         """
 
         try:
-            if client is None:
+            if model is None:
                 logger.info("API de Gemini no disponible, usando extracción local")
                 info = self._extract_with_regex(text)
                 info["raw_text"] = text
                 return info
 
-            response = client.models.generate_content(
-                model='gemini-1.5-pro',
+            response = model.generate_content(
                 contents=prompt
             )
             response_text = response.text.strip()
             logger.info(f"Respuesta de Gemini: {response_text[:200]}...")
 
-            # Intentar extraer JSON de la respuesta
-            json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
-            if json_match:
-                info = json.loads(json_match.group(0))
-                info.setdefault("name", "")
-                info.setdefault("contact", "")
-                info.setdefault("education", "")
-                info.setdefault("experience", "")
-                info.setdefault("skills", "")
-                info["raw_text"] = text
-                logger.info("JSON extraído exitosamente de Gemini")
-                return info
-            else:
-                raise ValueError("No se encontró JSON en la respuesta")
+            info = self._parse_json_response(response_text)
+            info.setdefault("name", "")
+            info.setdefault("contact", "")
+            info.setdefault("education", "")
+            info.setdefault("experience", "")
+            info.setdefault("skills", "")
+            info.setdefault("languages", "")
+            info.setdefault("certifications", "")
+            info.setdefault("summary", "")
+            info["raw_text"] = text
+            logger.info("JSON extraído exitosamente de Gemini")
+            return info
 
         except Exception as e:
             logger.error(f"Error en extracción con Gemini: {e}")
@@ -156,6 +160,22 @@ class ResumeAnalyzer:
             info = self._extract_with_regex(text)
             info["raw_text"] = text
             return info
+
+    def _parse_json_response(self, response_text: str) -> Dict[str, any]:
+        """Intentar extraer y limpiar JSON de la respuesta del modelo."""
+        json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
+        if not json_match:
+            raise ValueError("No se encontró JSON en la respuesta")
+
+        payload = json_match.group(0)
+        try:
+            return json.loads(payload)
+        except json.JSONDecodeError:
+            cleaned = re.sub(r'[\r\n]+', ' ', payload)
+            cleaned = re.sub(r',\s*}', '}', cleaned)
+            cleaned = re.sub(r',\s*\]', ']', cleaned)
+            cleaned = re.sub(r'\bNone\b', '""', cleaned)
+            return json.loads(cleaned)
 
     def _extract_section(self, text: str, headings: list[str]) -> str:
         """Extrae el contenido de una sección basada en encabezados comunes."""
@@ -187,6 +207,9 @@ class ResumeAnalyzer:
             "education": "",
             "experience": "",
             "skills": "",
+            "languages": "",
+            "certifications": "",
+            "summary": "",
             "raw_text": cleaned_text
         }
 
@@ -258,6 +281,30 @@ class ResumeAnalyzer:
             skills_lines = [line for line in lines if any(keyword in line.lower() for keyword in skills_keywords)]
             info["skills"] = ' '.join(dict.fromkeys(skills_lines[:8]))
 
+        summary_section = self._extract_section(cleaned_text, ['perfil', 'resumen', 'objetivo profesional', 'objetivo', 'perfil profesional', 'sobre mí', 'sobre mi'])
+        languages_section = self._extract_section(cleaned_text, ['idiomas', 'lenguas'])
+        certifications_section = self._extract_section(cleaned_text, ['certificaciones', 'certificaciones y cursos', 'cursos', 'diplomas'])
+
+        if summary_section:
+            info["summary"] = summary_section
+        else:
+            candidate_lines = [line for line in lines[:6] if not re.search(r'\b(curr[ií]culum|hoja de vida|perfil|experiencia|educación|formación|habilidades|idiomas|certificaciones)\b', line, re.I)]
+            info["summary"] = ' '.join(candidate_lines[:2])
+
+        if languages_section:
+            info["languages"] = languages_section
+        else:
+            language_keywords = ['español', 'inglés', 'inglés avanzado', 'inglés intermedio', 'inglés básico', 'alemán', 'francés', 'portugués']
+            language_lines = [line for line in lines if any(keyword in line.lower() for keyword in language_keywords)]
+            info["languages"] = ' '.join(dict.fromkeys(language_lines[:5]))
+
+        if certifications_section:
+            info["certifications"] = certifications_section
+        else:
+            cert_keywords = ['certificación', 'certificado', 'curso', 'diploma', 'certificado en', 'certificado de']
+            cert_lines = [line for line in lines if any(keyword in line.lower() for keyword in cert_keywords)]
+            info["certifications"] = ' '.join(dict.fromkeys(cert_lines[:5]))
+
         logger.info(f"Extracción con regex completada: {info}")
         return info
 
@@ -273,15 +320,36 @@ class ResumeAnalyzer:
         return len(common) / len(req_tokens)
 
     def _extract_matching_terms(self, requirements: str, candidate_text: str) -> list[str]:
-        stopwords = {'de', 'y', 'en', 'el', 'la', 'los', 'las', 'para', 'con', 'por', 'del', 'al', 'un', 'una', 'su', 'sus'}
-        req_tokens = self._normalize_text(requirements)
+        stopwords = {'de', 'y', 'en', 'el', 'la', 'los', 'las', 'para', 'con', 'por', 'del', 'al', 'un', 'una', 'su', 'sus', 'a', 'o', 'e', 'u'}
+        
+        # Normalize and get single word tokens from requirements, filtering stopwords
+        req_tokens = [token for token in self._normalize_text(requirements) if token not in stopwords]
         cand_tokens = set(self._normalize_text(candidate_text))
+        
         matched = []
         seen = set()
-        for token in req_tokens:
-            if token in stopwords:
-                continue
-            if token in cand_tokens and token not in seen:
+
+        # Extract common bigrams (two-word phrases) from requirements
+        req_bigrams = []
+        req_words_lower = requirements.lower().split()
+        for i in range(len(req_words_lower) - 1):
+            bigram = f"{req_words_lower[i]} {req_words_lower[i+1]}"
+            # Only consider bigrams if neither word is a stopword and it's not just two stopwords
+            if not (req_words_lower[i] in stopwords and req_words_lower[i+1] in stopwords):
+                req_bigrams.append(bigram)
+
+        # Prioritize matching bigrams
+        candidate_text_lower = candidate_text.lower()
+        for bigram in req_bigrams:
+            if bigram in candidate_text_lower and bigram not in seen:
+                seen.add(bigram)
+                matched.append(bigram)
+                if len(matched) >= 12: # Limit the number of matched terms for display
+                    break
+
+        # Then match single words
+        for token in req_tokens: # Use the filtered req_tokens
+            if token in cand_tokens and token not in seen and token not in stopwords: # Ensure single words are not stopwords
                 seen.add(token)
                 matched.append(token)
                 if len(matched) >= 12:
@@ -326,33 +394,33 @@ class ResumeAnalyzer:
 
     def match_cv_to_job(self, cv_data: Dict[str, str], job_title: str, job_description: str) -> Dict[str, any]:
         """Usa Gemini para determinar si un CV se ajusta a una vacante con análisis detallado."""
+        candidate_info = {
+            'name': cv_data.get('name', ''),
+            'education': cv_data.get('education', ''),
+            'experience': cv_data.get('experience', ''),
+            'skills': cv_data.get('skills', ''),
+            'languages': cv_data.get('languages', ''),
+            'certifications': cv_data.get('certifications', ''),
+            'summary': cv_data.get('summary', '')
+        }
+
         prompt = f"""
-        Realiza un análisis detallado para determinar si el siguiente currículum vitae es adecuado para el puesto de trabajo descrito.
+        Analiza si el siguiente candidato es adecuado para el puesto descrito.
 
         PUESTO DE TRABAJO:
         Título: {job_title}
-        Descripción completa: {job_description}
+        Descripción: {job_description}
 
-        INFORMACIÓN DEL CANDIDATO:
-        - Nombre: {cv_data.get('name', 'No especificado')}
-        - Educación: {cv_data.get('education', 'No especificada')}
-        - Experiencia laboral: {cv_data.get('experience', 'No especificada')}
-        - Habilidades técnicas y blandas: {cv_data.get('skills', 'No especificadas')}
-        - Información de contacto: {cv_data.get('contact', 'No especificada')}
+        CANDIDATO:
+        {json.dumps(candidate_info, ensure_ascii=False)}
 
-        INSTRUCCIONES DE ANÁLISIS:
-        1. Evalúa la experiencia relevante: ¿Cuántos años de experiencia tiene en áreas relacionadas?
-        2. Revisa la formación académica: ¿Cumple con los requisitos educativos?
-        3. Analiza las habilidades: ¿Posee las competencias necesarias para el puesto?
-        4. Considera el ajuste general: ¿El perfil encaja con el puesto en logística o producción?
+        INSTRUCCIONES:
+        - Evalúa experiencia, educación, habilidades, idiomas y certificaciones.
+        - Describe claramente fortalezas y brechas.
+        - Calcula un puntaje de coincidencia del 0 al 100.
+        - Responde ÚNICAMENTE con un objeto JSON válido sin texto adicional.
 
-        CRITERIOS DE EVALUACIÓN:
-        - Excelente ajuste: 90-100% (cumple todos los requisitos principales)
-        - Buen ajuste: 70-89% (cumple la mayoría, con algunas brechas menores)
-        - Ajuste regular: 50-69% (cumple algunos requisitos, pero tiene brechas importantes)
-        - Bajo ajuste: 0-49% (no cumple los requisitos principales)
-
-        Responde ÚNICAMENTE con un objeto JSON válido:
+        Formato de salida:
         {{
             "match": true,
             "score": 85,
@@ -366,7 +434,7 @@ class ResumeAnalyzer:
         local_score = self._safe_int_score(self._score_candidate_against_requirements(f"{job_title} {job_description}", local_profile) * 100)
         matched_terms = self._extract_matching_terms(f"{job_title} {job_description}", local_profile)
 
-        if client is None:
+        if model is None:
             logger.info("API de Gemini no disponible, usando solo análisis local")
             result = {
                 'match': local_score >= 70,
@@ -379,22 +447,17 @@ class ResumeAnalyzer:
             return result
 
         try:
-            response = client.models.generate_content(
-                model='gemini-1.5-pro',
+            response = model.generate_content(
                 contents=prompt
             )
             response_text = response.text.strip()
-            json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
-            if json_match:
-                result = json.loads(json_match.group(0))
-                result.setdefault('match', False)
-                result.setdefault('score', 0)
-                result.setdefault('reasoning', 'Análisis no disponible')
-                result.setdefault('strengths', [])
-                result.setdefault('gaps', [])
-                result.setdefault('matched_terms', matched_terms)
-            else:
-                raise ValueError('No se encontró JSON en la respuesta')
+            result = self._parse_json_response(response_text)
+            result.setdefault('match', False)
+            result.setdefault('score', 0)
+            result.setdefault('reasoning', 'Análisis no disponible')
+            result.setdefault('strengths', [])
+            result.setdefault('gaps', [])
+            result.setdefault('matched_terms', matched_terms)
         except Exception as e:
             logger.error(f"Error en matching: {e}")
             result = {
@@ -477,5 +540,24 @@ class ResumeAnalyzer:
 
     def score_resume(self, resume_data: dict, job_description: str) -> float:
         prompt = f"Evalúa la coincidencia del CV con la vacante (0-100): {job_description}. Datos CV: {json.dumps(resume_data)}"
-        response = client.models.generate_content(model="gemini-1.5-pro", contents=prompt)
-        # Parsear y retornar score
+        # The previous line was a duplicate prompt assignment and an overwritten response.
+        # This function should return a float score.
+
+        # Modified prompt to explicitly ask for only the score number.
+        prompt = f"Evalúa la coincidencia del CV con la vacante (0-100). Responde ÚNICAMENTE con el número del score. Vacante: {job_description}. Datos CV: {json.dumps(resume_data, ensure_ascii=False)}"
+
+        if model is None:
+            logger.info("API de Gemini no disponible para scoring, retornando 0.0")
+            return 0.0
+
+        try:
+            response = model.generate_content(contents=prompt)
+            score_text = response.text.strip()
+            try:
+                return float(score_text)
+            except ValueError:
+                logger.error(f"Gemini devolvió un puntaje no numérico en score_resume: {score_text}")
+                return 0.0
+        except Exception as e:
+            logger.error(f"Error getting score from Gemini in score_resume: {e}")
+            return 0.0
